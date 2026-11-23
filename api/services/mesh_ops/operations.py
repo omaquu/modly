@@ -128,7 +128,8 @@ def repair_mesh(
 
     temporary_dir = tempfile.mkdtemp()
     try:
-        has_tex = _has_texture(geometry, trimesh)
+        preserve_textures = bool(params.get("preserve_textures", True))
+        has_tex = _has_texture(geometry, trimesh) and preserve_textures
         if has_tex:
             obj_input = os.path.join(temporary_dir, "input.obj")
             texture_input = os.path.join(temporary_dir, "texture.png")

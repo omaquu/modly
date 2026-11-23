@@ -49,6 +49,13 @@
           "min": 10,
           "max": 10000,
           "tooltip": "Maximum number of boundary edges of a hole to be filled. Increase if large holes remain open."
+        },
+        {
+          "id": "preserve_textures",
+          "label": "Keep Textures",
+          "type": "boolean",
+          "default": true,
+          "tooltip": "Keep original textures and UVs. Uncheck if you want to strip textures and restore them later."
         }
       ]
     }

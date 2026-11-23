@@ -53,6 +53,13 @@ REPAIR_PARAMS = (
             "Increase if large holes remain open."
         ),
     },
+    {
+        "id": "preserve_textures",
+        "label": "Keep Textures",
+        "type": "boolean",
+        "default": True,
+        "tooltip": "Keep original textures and UVs. Uncheck if you want to strip textures and restore them later.",
+    },
 )
 
 DECIMATE_PARAMS = (
@@ -220,10 +227,10 @@ REPAIR_MESH_PARAMS = (
     },
     {
         "id": "preserve_textures",
-        "label": "Preserve Textures",
+        "label": "Keep Textures",
         "type": "boolean",
         "default": True,
-        "tooltip": "Preserve and transfer original UVs and textures onto the repaired mesh.",
+        "tooltip": "Preserve and transfer original UVs and textures onto the repaired mesh. Uncheck if you want to strip textures.",
     },
 )
 
