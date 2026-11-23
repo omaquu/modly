@@ -51,6 +51,25 @@ export function newWorkflowRunRecord(
   }
 }
 
+export function newQueuedWorkflowRunRecord(
+  id: string,
+  workflow: WorkflowLike,
+  inputs: Record<string, unknown>,
+  now: number,
+): WorkflowRunRecord {
+  return {
+    id,
+    status:        'pending',
+    workflow_id:   workflow.id,
+    workflow_name: workflow.name,
+    inputs,
+    params:        workflowRunParams(workflow),
+    steps:         [],
+    created_at:    now,
+    started_at:    null,
+  }
+}
+
 /** Close the open step (if any) with `status`. */
 export function endRecordStep(record: WorkflowRunRecord, status: RunStatus, now: number): WorkflowRunRecord {
   const last = record.steps[record.steps.length - 1]

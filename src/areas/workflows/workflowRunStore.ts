@@ -11,7 +11,7 @@ import { isBranchStarter, isSceneOutput, resolveDataSource, reachesSceneOutput, 
 import { assignSlotFilePaths } from './slotInputs'
 import type { SlotInputType } from './slotInputs'
 import {
-  endRecordStep, finishWorkflowRunRecord, isTerminalRunStatus, newWorkflowRunRecord,
+  endRecordStep, finishWorkflowRunRecord, isTerminalRunStatus, newQueuedWorkflowRunRecord, newWorkflowRunRecord,
   reopenWorkflowRunRecord, runOutputPath, startRecordStep, toLiveWorkflowRun, workflowRunInputs,
 } from './workflowRunRecord'
 import type { LiveWorkflowRun, WorkflowRunRecord } from './workflowRunRecord'
@@ -602,6 +602,14 @@ function pushBranchSceneMesh(ctx: RunContext, waitId: string): void {
 
 // ─── Store ────────────────────────────────────────────────────────────────────
 
+export interface QueuedWorkflowRun {
+  id: string
+  workflow: Workflow
+  allExtensions: WorkflowExtension[]
+  overrideImageData?: string
+  createdAt: number
+}
+
 interface WorkflowRunStore {
   runState:         WorkflowRunState
   /**
@@ -618,8 +626,12 @@ interface WorkflowRunStore {
   whileProgress:    Record<string, { current: number; total: number | null }>
   /** iterator ids paused together at a shared boundary (lockstep For Each group) */
   pausedGroup:      string[]
+  queue:            QueuedWorkflowRun[]
 
-  run:         (workflow: Workflow, allExtensions: WorkflowExtension[], overrideImageData?: string) => Promise<void>
+  run:         (workflow: Workflow, allExtensions: WorkflowExtension[], overrideImageData?: string, existingRunId?: string) => Promise<void>
+  enqueue:     (workflow: Workflow, allExtensions: WorkflowExtension[], overrideImageData?: string) => string
+  dequeue:     (id: string) => void
+  clearQueue:  () => void
   cancel:      () => void
   reset:       () => void
   continueRun: (waitId: string) => Promise<void>
@@ -700,9 +712,21 @@ export const useWorkflowRunStore = create<WorkflowRunStore>((set, get) => {
     useAppStore.getState().updateCurrentJob({ status: 'done', progress: 100, outputUrl })
     finishRecord('done', { outputPath: runOutputPath(outputUrl, outputPath) })
     void showCompletionNotification('Workflow run complete')
+    runNextInQueue()
+  }
+
+  const runNextInQueue = (): void => {
+    const queue = get().queue
+    if (queue.length === 0) return
+    const next = queue[0]
+    set({ queue: queue.slice(1) })
+    setTimeout(() => {
+      void get().run(next.workflow, next.allExtensions, next.overrideImageData, next.id)
+    }, 300)
   }
 
   return {
+    queue:            [],
     runState:         IDLE,
     liveRecord:       null,
     activeNodeId:     null,
@@ -713,7 +737,7 @@ export const useWorkflowRunStore = create<WorkflowRunStore>((set, get) => {
     whileProgress:    {},
     pausedGroup:      [],
 
-    async run(workflow, allExtensions, overrideImageData?) {
+    async run(workflow, allExtensions, overrideImageData?, existingRunId?: string) {
       _cancel.current = false
       _pauseRequested.current = false
       // Seed live params from the snapshot; UI edits during the run override these.
@@ -725,7 +749,7 @@ export const useWorkflowRunStore = create<WorkflowRunStore>((set, get) => {
       // A previous run still parked on its Wait branches is abandoned by this one.
       finishRecord('cancelled')
       _record.current = newWorkflowRunRecord(
-        crypto.randomUUID(),
+        existingRunId ?? crypto.randomUUID(),
         workflow,
         workflowRunInputs(workflow, !!overrideImageData),
         nowSeconds(),
@@ -1044,6 +1068,7 @@ export const useWorkflowRunStore = create<WorkflowRunStore>((set, get) => {
           finishRecord('error', { error: String(err) })
           useAppStore.getState().updateCurrentJob({ status: 'error', error: String(err) })
           void showRunErrorNotification({ title: 'Workflow run failed', name: workflow.name, error: err })
+          runNextInQueue()
         }
       }
     },
@@ -1111,7 +1136,10 @@ export const useWorkflowRunStore = create<WorkflowRunStore>((set, get) => {
         if (allFinished && !anyError) {
           finalize(ctx, newWaitStates)
         } else {
-          if (allFinished) finishRecord('error', { error: err ?? get().runState.error })
+          if (allFinished) {
+            finishRecord('error', { error: err ?? get().runState.error })
+            runNextInQueue()
+          }
           set((s) => ({
             activeNodeId:    null,
             runningBranchId: null,
@@ -1156,8 +1184,69 @@ export const useWorkflowRunStore = create<WorkflowRunStore>((set, get) => {
         _activeJobId.current = null
       }
       _ctx.current = null
+      get().clearQueue()
       set({ runState: IDLE, activeNodeId: null, activeWorkflowId: null, nodeImageOutputs: {}, waitStates: {}, runningBranchId: null, whileProgress: {}, pausedGroup: [] })
       useAppStore.getState().setCurrentJob(null)
+    },
+
+    enqueue(workflow, allExtensions, overrideImageData?) {
+      const state = get()
+      const isRunning = state.runState.status === 'running' || state.runState.status === 'paused'
+      if (!isRunning && state.queue.length === 0) {
+        void get().run(workflow, allExtensions, overrideImageData)
+        return ''
+      }
+      const id = crypto.randomUUID()
+      const now = nowSeconds()
+      const inputs = workflowRunInputs(workflow, !!overrideImageData)
+      const record = newQueuedWorkflowRunRecord(id, workflow, inputs, now)
+
+      const apiUrl = useAppStore.getState().apiUrl
+      if (apiUrl) {
+        axios.put(`${apiUrl}/workflow-runs/${encodeURIComponent(id)}`, record).catch(() => {})
+      }
+
+      set((s) => ({
+        queue: [...s.queue, { id, workflow, allExtensions, overrideImageData, createdAt: now }],
+      }))
+      return id
+    },
+
+    dequeue(id: string) {
+      const state = get()
+      const item = state.queue.find((q) => q.id === id)
+      if (item) {
+        const apiUrl = useAppStore.getState().apiUrl
+        if (apiUrl) {
+          axios.put(`${apiUrl}/workflow-runs/${encodeURIComponent(item.id)}`, {
+            workflow_id: item.workflow.id,
+            workflow_name: item.workflow.name,
+            status: 'cancelled',
+            error: 'Removed from queue',
+            created_at: item.createdAt,
+            ended_at: nowSeconds(),
+          }).catch(() => {})
+        }
+      }
+      set((s) => ({ queue: s.queue.filter((q) => q.id !== id) }))
+    },
+
+    clearQueue() {
+      const state = get()
+      const apiUrl = useAppStore.getState().apiUrl
+      if (apiUrl) {
+        for (const item of state.queue) {
+          axios.put(`${apiUrl}/workflow-runs/${encodeURIComponent(item.id)}`, {
+            workflow_id: item.workflow.id,
+            workflow_name: item.workflow.name,
+            status: 'cancelled',
+            error: 'Cancelled from queue',
+            created_at: item.createdAt,
+            ended_at: nowSeconds(),
+          }).catch(() => {})
+        }
+      }
+      set({ queue: [] })
     },
 
     reset() {

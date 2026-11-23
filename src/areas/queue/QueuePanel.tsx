@@ -362,6 +362,18 @@ function RunCard({ row, now, apiUrl, resolveModel }: { row: QueueRow, now: numbe
               </span>
             )}
             <StatusPill status={row.status} paused={row.paused} />
+            {row.status === 'pending' && (
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation()
+                  useWorkflowRunStore.getState().dequeue(row.id)
+                }}
+                className="rounded border border-zinc-700/60 px-1.5 py-0.5 text-[9.5px] font-medium text-zinc-400 hover:border-red-800 hover:text-red-300 transition-colors"
+              >
+                Cancel
+              </button>
+            )}
           </div>
           {finished && <OutputActions row={row} />}
         </div>

@@ -518,8 +518,9 @@ function EmbeddedCanvas({ workflow, allExtensions }: {
 
   const currentMeshUrl = useAppStore((s) => s.currentJob?.outputUrl)
   const showToast = useAppStore((s) => s.showToast)
-  const { runState, run, cancel } = useWorkflowRunStore()
+  const { runState, run, cancel, enqueue, clearQueue, queue } = useWorkflowRunStore()
   const isRunning = runState.status === 'running' || runState.status === 'paused'
+  const queueCount = queue?.length ?? 0
 
   // Update AddToScene node when run completes
   useEffect(() => {
@@ -574,15 +575,36 @@ function EmbeddedCanvas({ workflow, allExtensions }: {
     // Persist the edited params so they survive remounts and are the values actually used.
     // Drop the pending debounce — this save supersedes it.
     if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null }
+    const clonedNodes = JSON.parse(JSON.stringify(nodes)) as WFNode[]
+    const clonedEdges = JSON.parse(JSON.stringify(edges)) as WFEdge[]
     const wf: Workflow = {
       ...workflow,
-      nodes: nodes as WFNode[],
-      edges: edges as WFEdge[],
+      nodes: clonedNodes,
+      edges: clonedEdges,
       updatedAt: new Date().toISOString(),
     }
     saveAndClaim(wf)
     run(wf, allExtensions)
   }, [firstPreflightIssue, nodes, edges, workflow, allExtensions, run, showToast, saveAndClaim])
+
+  const handleQueue = useCallback(() => {
+    if (firstPreflightIssue) {
+      showToast(firstPreflightIssue)
+      return
+    }
+    if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null }
+    const clonedNodes = JSON.parse(JSON.stringify(nodes)) as WFNode[]
+    const clonedEdges = JSON.parse(JSON.stringify(edges)) as WFEdge[]
+    const wf: Workflow = {
+      ...workflow,
+      nodes: clonedNodes,
+      edges: clonedEdges,
+      updatedAt: new Date().toISOString(),
+    }
+    saveAndClaim(wf)
+    enqueue(wf, allExtensions)
+    showToast('Generation added to queue')
+  }, [firstPreflightIssue, nodes, edges, workflow, allExtensions, enqueue, showToast, saveAndClaim])
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
@@ -629,7 +651,7 @@ function EmbeddedCanvas({ workflow, allExtensions }: {
 
       {/* Footer */}
       <div className="shrink-0 px-4 pt-3 pb-4 border-t border-zinc-800 flex flex-col gap-2">
-        {firstPreflightIssue && !isRunning && (
+        {firstPreflightIssue && (
           <div className="flex items-center gap-2 px-2.5 py-2 rounded-lg bg-amber-950/40 border border-amber-800/50">
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-amber-300 shrink-0">
               <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
@@ -638,14 +660,43 @@ function EmbeddedCanvas({ workflow, allExtensions }: {
             <span className="text-[10px] text-amber-300 font-medium">{firstPreflightIssue}</span>
           </div>
         )}
+        {queueCount > 0 && (
+          <div className="flex items-center justify-between px-1 text-[11px] text-zinc-400">
+            <span>{queueCount} {queueCount === 1 ? 'generation queued' : 'generations queued'}</span>
+            <button
+              type="button"
+              onClick={clearQueue}
+              className="text-[10px] text-zinc-500 hover:text-red-400 transition-colors"
+            >
+              Clear queue
+            </button>
+          </div>
+        )}
         {isRunning ? (
-          <button onClick={() => cancel()}
-            className="w-full py-2.5 rounded-lg text-sm font-semibold bg-red-600 hover:bg-red-700 text-white transition-colors">
-            Stop
-          </button>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => cancel()}
+              className="w-1/3 py-2.5 rounded-lg text-sm font-semibold bg-red-600 hover:bg-red-700 text-white transition-colors"
+            >
+              Stop
+            </button>
+            <button
+              type="button"
+              onClick={handleQueue}
+              disabled={Boolean(firstPreflightIssue)}
+              className="w-2/3 py-2.5 rounded-lg text-sm font-semibold bg-accent hover:bg-accent-dark disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors"
+            >
+              {queueCount > 0 ? `Queue Next (${queueCount})` : 'Queue Next'}
+            </button>
+          </div>
         ) : (
-          <button onClick={handleGenerate} disabled={Boolean(firstPreflightIssue)}
-            className="w-full py-2.5 rounded-lg text-sm font-semibold bg-accent hover:bg-accent-dark disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors">
+          <button
+            type="button"
+            onClick={handleGenerate}
+            disabled={Boolean(firstPreflightIssue)}
+            className="w-full py-2.5 rounded-lg text-sm font-semibold bg-accent hover:bg-accent-dark disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors"
+          >
             Generate 3D Model
           </button>
         )}

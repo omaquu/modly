@@ -137,16 +137,36 @@ def _run_operation(
 ) -> MeshOpResult:
     context = _operation_context(output_path, preserve_visuals)
     started_at = time.time()
+    run_id = str(uuid.uuid4())
+    is_action_op = operation_id not in ("inspect_mesh", "suggest_fixes")
+    if is_action_op:
+        workspace = registry.WORKSPACE_DIR
+        run_history.save(RunRecord(
+            id=run_id,
+            kind="mesh_op",
+            op_id=operation_id,
+            status="running",
+            inputs={"mesh": workspace_relative(input_path, workspace)},
+            params=dict(params),
+            created_at=started_at,
+            started_at=started_at,
+        ))
     try:
         with _mesh_op_http_errors():
             result = mesh_ops_registry.run(operation_id, input_path, params, context)
     except HTTPException as exc:
-        _record_mesh_op(operation_id, input_path, params, started_at, error=str(exc.detail))
+        if is_action_op:
+            _record_mesh_op(operation_id, input_path, params, started_at, run_id=run_id, error=str(exc.detail))
         raise
-    # Analysis ops (inspect_mesh, suggest_fixes) only report: the viewer calls them on
-    # every selection, and they would crowd real runs out of the capped history.
+    except Exception as exc:
+        if is_action_op:
+            _record_mesh_op(operation_id, input_path, params, started_at, run_id=run_id, error=str(exc))
+        raise
+
     if result.file_path is not None:
-        _record_mesh_op(operation_id, input_path, params, started_at, output=result.file_path)
+        _record_mesh_op(operation_id, input_path, params, started_at, run_id=run_id, output=result.file_path)
+    elif is_action_op:
+        _record_mesh_op(operation_id, input_path, params, started_at, run_id=run_id)
     return result
 
 
@@ -155,13 +175,14 @@ def _record_mesh_op(
     input_path: Path,
     params: dict[str, object],
     started_at: float,
+    run_id: str | None = None,
     output: Path | None = None,
     error: str | None = None,
 ) -> None:
     """Persist a synchronous mesh op in run history (services.run_history)."""
     workspace = registry.WORKSPACE_DIR
     run_history.save(RunRecord(
-        id=str(uuid.uuid4()),
+        id=run_id or str(uuid.uuid4()),
         kind="mesh_op",
         op_id=operation_id,
         status="error" if error is not None else "done",
