@@ -356,3 +356,157 @@ def prepare_for_web(
     if splat_step:
         steps.insert(0, splat_step)
     return _finish(output_path, steps)
+
+
+def tune_splat(
+    input_path: Path,
+    params: Mapping[str, Any],
+    context: MeshOpContext,
+) -> MeshOpResult:
+    """Downsample and prune a Gaussian Splat (.ply or .splat) to reduce VRAM and file size."""
+    if input_path.suffix.lower() not in (".ply", ".splat"):
+        raise MeshOpExecutionError(f"tune_splat requires a Gaussian Splat (.ply or .splat), got {input_path.name}")
+
+    output_path = context.workspace_dir / "Workflows" / f"splat-tuned-{int(time.time() * 1000)}.ply"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if context.output_path is not None:
+        output_path = Path(context.output_path)
+
+    context.log("Preset: tune splat")
+    context.progress(10, "Loading Gaussian Splat…")
+
+    target_str = str(params.get("target_gaussians", "262k"))
+    target_map = {
+        "1M": 1048576,
+        "500k": 524288,
+        "262k": 262144,
+        "131k": 131072,
+        "65k": 65536,
+    }
+    target_count = target_map.get(target_str, 262144)
+    min_opacity = float(params.get("min_opacity", 0.05))
+
+    py, ext_dir = _find_splat_reconstructor()
+    context.progress(25, f"Pruning floaters and downsampling to {target_str}…")
+
+    cmd = [
+        str(py),
+        "-c",
+        """
+import sys, time, os, hashlib, json
+from pathlib import Path
+import numpy as np
+from plyfile import PlyData, PlyElement
+
+input_path = sys.argv[1]
+output_path = sys.argv[2]
+target_count = int(sys.argv[3])
+min_opacity = float(sys.argv[4])
+workspace_dir = sys.argv[5]
+
+t0 = time.time()
+ply = PlyData.read(input_path)
+data = ply['vertex'].data
+orig_count = len(data)
+
+# 1. Opacity threshold
+logit_thresh = np.log(min_opacity / (1.0 - min_opacity))
+mask = data['opacity'] >= logit_thresh
+filtered = data[mask]
+
+# 2. Score and pick top K
+if len(filtered) > target_count:
+    scores = filtered['opacity'] + (filtered['scale_0'] + filtered['scale_1'] + filtered['scale_2']) * 0.333
+    top_indices = np.argpartition(-scores, target_count)[:target_count]
+    final_data = filtered[top_indices]
+else:
+    final_data = filtered
+
+el = PlyElement.describe(final_data, 'vertex')
+PlyData([el], text=False).write(output_path)
+final_count = len(final_data)
+
+# Auto-generate thumbnail for the tuned splat
+try:
+    sys.path.insert(0, sys.argv[6])
+    from splat_mesh import load_splat_file
+    from splatforge.render.splat import render_splats
+    from splatforge.render.cameras import look_at_w2c
+    from PIL import Image
+    import torch
+
+    g = load_splat_file(output_path, device='cuda')
+    xyz = g['xyz'].cpu().numpy()
+    lo, hi = xyz.min(0), xyz.max(0)
+    center = (lo + hi) * 0.5
+    diag = float(np.linalg.norm(hi - lo))
+    eye = center + np.array([0, -diag * 1.5, diag * 0.2], dtype=np.float32)
+    R, t = look_at_w2c(eye, center, up_world=(0, 0, 1))
+    cam = {'R': torch.as_tensor(R, device='cuda'), 't': torch.as_tensor(t, device='cuda'), 'fx': 256.0, 'fy': 256.0, 'cx': 128.0, 'cy': 128.0, 'res': 256}
+    rgb, alpha = render_splats(g['xyz'], g['opacity'], g['scale'], g['quat'], g['rgb'], cam)
+    rgb_np = (rgb.cpu().numpy() * 255).astype(np.uint8)
+    alpha_np = (alpha.cpu().numpy() * 255).astype(np.uint8)[:, :, None]
+    img = Image.fromarray(np.concatenate([rgb_np, alpha_np], axis=2), mode='RGBA')
+    canvas = Image.new('RGBA', (256, 256), (24, 24, 27, 255))
+    canvas.paste(img, (0, 0), img)
+
+    app_data = os.environ.get('APPDATA')
+    if app_data:
+        thumbs_dir = Path(app_data) / 'Modly' / 'thumbnails'
+        thumbs_dir.mkdir(parents=True, exist_ok=True)
+        out_p = Path(output_path)
+        rel_path = f"Workflows/{out_p.name}"
+        key = hashlib.sha256(f"{os.path.abspath(workspace_dir)}\\n{rel_path}".encode('utf-8')).hexdigest()[:32]
+        st = out_p.stat()
+        alphabet = '0123456789abcdefghijklmnopqrstuvwxyz'
+        def b36(n):
+            if n == 0: return '0'
+            r = []
+            while n: r.append(alphabet[n%36]); n//=36
+            return ''.join(reversed(r))
+        v_str = f"{b36(int(st.st_mtime*1000))}-{b36(st.st_size)}-r1"
+        canvas.save(str(thumbs_dir / f"{key}.{v_str}.webp"), 'WEBP', quality=90)
+        (thumbs_dir / f"{key}.json").write_text(json.dumps({'workspaceDir': workspace_dir, 'workspacePath': rel_path}), encoding='utf-8')
+except Exception as e:
+    pass
+
+print(f"DONE:{orig_count}:{final_count}")
+""",
+        str(input_path),
+        str(output_path),
+        str(target_count),
+        str(min_opacity),
+        str(context.workspace_dir),
+        str(ext_dir),
+    ]
+
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if proc.returncode != 0:
+        err = proc.stderr[-500:] if proc.stderr else proc.stdout[-500:]
+        raise MeshOpExecutionError(f"Failed to tune splat: {err}")
+
+    orig_c = 0
+    final_c = 0
+    for line in proc.stdout.splitlines():
+        if line.startswith("DONE:"):
+            parts = line.split(":")
+            orig_c = int(parts[1])
+            final_c = int(parts[2])
+
+    reduction = ((orig_c - final_c) / max(orig_c, 1)) * 100
+    context.progress(100, "Done")
+
+    return MeshOpResult(
+        file_path=output_path,
+        details={
+            "steps": [
+                {
+                    "op": "tune_splat",
+                    "summary": f"Tuned splat from {orig_c:,} to {final_c:,} Gaussians ({reduction:.0f}% reduction, budget {target_str}).",
+                }
+            ],
+            "original_count": orig_c,
+            "final_count": final_c,
+            "reduction_percent": round(reduction, 1),
+        },
+    )

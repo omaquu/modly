@@ -3,7 +3,7 @@
 from .agent_format import format_fixes, format_inspection, format_preset, format_repair
 from .inspection import inspect_mesh, suggest_fixes
 from .operations import decimate_mesh, repair_mesh, smooth_mesh
-from .presets import prepare_for_game, prepare_for_printing, prepare_for_web, splat_to_mesh
+from .presets import prepare_for_game, prepare_for_printing, prepare_for_web, splat_to_mesh, tune_splat
 from .repair import auto_repair_mesh
 from .transforms import auto_orient, drop_to_ground, normalize_scale, recenter, set_real_scale
 from .types import AgentTool, MeshOp
@@ -340,6 +340,32 @@ SPLAT_TO_MESH_PARAMS = (
     },
 )
 
+TUNE_SPLAT_PARAMS = (
+    {
+        "id": "target_gaussians",
+        "label": "Target Gaussians",
+        "type": "select",
+        "default": "262k",
+        "options": [
+            {"value": "500k", "label": "500k (High fidelity)"},
+            {"value": "262k", "label": "262k (Balanced - recommended)"},
+            {"value": "131k", "label": "131k (Light)"},
+            {"value": "65k", "label": "65k (Ultra light / fast)"},
+        ],
+        "tooltip": "Target number of Gaussians to keep. Downsamples large 1M+ models to reduce VRAM and file size.",
+    },
+    {
+        "id": "min_opacity",
+        "label": "Min Opacity",
+        "type": "float",
+        "default": 0.05,
+        "min": 0.01,
+        "max": 0.5,
+        "step": 0.01,
+        "tooltip": "Removes low-opacity floating noise before downsampling.",
+    },
+)
+
 DIMENSION_HINT = "Which side gets the size: longest, x (width), y (height) or z (depth)."
 
 
@@ -542,6 +568,23 @@ BUILTIN_MESH_OPS = (
                 "texture": "Texture resolution (Baked 4K, Baked 2K, Baked 1K, Auto, Vertex colors).",
                 "mesh_smoothing": "Taubin smoothing: None, Light, Medium, Strong.",
                 "color_mode": "Refined, Vivid, Direct.",
+            },
+            format_result=format_preset,
+        ),
+    ),
+    MeshOp(
+        id="tune_splat",
+        label="Tune Splat (Optimize)",
+        params_schema=TUNE_SPLAT_PARAMS,
+        fn=tune_splat,
+        category="presets",
+        agent=AgentTool(
+            description=(
+                "Downsample and prune a Gaussian Splat (.ply or .splat) to reduce file size and VRAM."
+            ),
+            params={
+                "target_gaussians": "Target gaussian count (500k, 262k, 131k, 65k).",
+                "min_opacity": "Minimum opacity threshold to prune floaters.",
             },
             format_result=format_preset,
         ),
