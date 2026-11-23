@@ -4,6 +4,9 @@ Each preset composes the registry's own op functions; intermediate files live
 in a temporary directory, so the preset writes a single output mesh.
 """
 
+import os
+import subprocess
+import sys
 import tempfile
 from dataclasses import replace
 from pathlib import Path
@@ -14,6 +17,117 @@ from .operations import _output_path, decimate_mesh
 from .repair import auto_repair_mesh
 from .transforms import DIMENSION_NAMES, UNIT_SCALE, _trimesh, apply_transforms
 from .types import MeshOpContext, MeshOpExecutionError, MeshOpResult
+
+
+def _find_splat_reconstructor() -> tuple[Path, Path]:
+    """Find Python executable and extension dir with reconstruct_gaussian_to_glb."""
+    user_modly = Path.home() / "Documents" / "Modly" / "extensions"
+    for candidate_name in ("idol", "triposplat"):
+        candidate = user_modly / candidate_name
+        if candidate.is_dir():
+            py = candidate / "venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+            splat_py = candidate / "splat_mesh.py"
+            if py.is_file() and splat_py.is_file():
+                return py, candidate
+    if user_modly.is_dir():
+        for candidate in user_modly.iterdir():
+            if candidate.is_dir():
+                py = candidate / "venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+                splat_py = candidate / "splat_mesh.py"
+                if py.is_file() and splat_py.is_file():
+                    return py, candidate
+    raise MeshOpExecutionError("No Gaussian Splat reconstruction extension found (requires idol or triposplat with venv).")
+
+
+def _ensure_mesh_input(
+    input_path: Path,
+    scratch: Path,
+    context: MeshOpContext,
+) -> tuple[Path, Optional[dict[str, Any]]]:
+    """If input is a Gaussian Splat (.ply or .splat), reconstruct it to a high-quality mesh first."""
+    if input_path.suffix.lower() in (".ply", ".splat"):
+        context.log("Input is a Gaussian Splat; reconstructing to mesh first…")
+        context.progress(5, "Reconstructing splat to mesh…")
+        splat_out = scratch / "splat_reconstructed.glb"
+        py, ext_dir = _find_splat_reconstructor()
+        cmd = [
+            str(py),
+            "-c",
+            "import sys; sys.path.insert(0, sys.argv[1]); from splat_mesh import reconstruct_gaussian_to_glb; reconstruct_gaussian_to_glb(sys.argv[2], sys.argv[3], mesh_detail=int(sys.argv[4]), mesh_smoothing=sys.argv[5], color_mode=sys.argv[6], texture=sys.argv[7])",
+            str(ext_dir),
+            str(input_path),
+            str(splat_out),
+            "10",       # mesh_detail 10 (Ultra)
+            "Medium",   # mesh_smoothing
+            "Refined",  # color_mode
+            "Baked 4K", # texture
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        if proc.returncode != 0:
+            err = proc.stderr[-500:] if proc.stderr else (proc.stdout[-500:] if proc.stdout else "unknown error")
+            raise MeshOpExecutionError(f"Failed to turn splat to mesh: {err}")
+        if not splat_out.is_file():
+            raise MeshOpExecutionError("Splat reconstruction did not produce an output mesh.")
+        step = {
+            "op": "splat_to_mesh",
+            "summary": "Reconstructed high-fidelity mesh from Gaussian Splat (detail 10, Baked 4K).",
+        }
+        return splat_out, step
+    return input_path, None
+
+
+def splat_to_mesh(
+    input_path: Path,
+    params: Mapping[str, Any],
+    context: MeshOpContext,
+) -> MeshOpResult:
+    """Turn a Gaussian Splat (.ply or .splat) into a high-fidelity textured 3D mesh."""
+    output_path = _output_path(context, "splat-to-mesh")
+    context.log("Preset: turn splat to mesh")
+    context.progress(10, "Preparing reconstruction…")
+
+    mesh_detail = int(params.get("mesh_detail", 10))
+    mesh_smoothing = str(params.get("mesh_smoothing", "Medium"))
+    color_mode = str(params.get("color_mode", "Refined"))
+    texture = str(params.get("texture", "Baked 4K"))
+
+    py, ext_dir = _find_splat_reconstructor()
+    context.progress(25, "Reconstructing surface from Gaussians…")
+    cmd = [
+        str(py),
+        "-c",
+        "import sys; sys.path.insert(0, sys.argv[1]); from splat_mesh import reconstruct_gaussian_to_glb; reconstruct_gaussian_to_glb(sys.argv[2], sys.argv[3], mesh_detail=int(sys.argv[4]), mesh_smoothing=sys.argv[5], color_mode=sys.argv[6], texture=sys.argv[7])",
+        str(ext_dir),
+        str(input_path),
+        str(output_path),
+        str(mesh_detail),
+        str(mesh_smoothing),
+        str(color_mode),
+        str(texture),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    if proc.returncode != 0:
+        err = proc.stderr[-500:] if proc.stderr else (proc.stdout[-500:] if proc.stdout else "unknown error")
+        raise MeshOpExecutionError(f"Failed to turn splat to mesh: {err}")
+    if not output_path.is_file():
+        raise MeshOpExecutionError("Splat reconstruction did not produce an output mesh.")
+
+    context.progress(95, "Measuring mesh…")
+    face_count, dimensions = _measure(output_path)
+    context.progress(100, "Done")
+    return MeshOpResult(
+        file_path=output_path,
+        details={
+            "steps": [
+                {
+                    "op": "splat_to_mesh",
+                    "summary": f"Turned splat to mesh (detail {mesh_detail}, {mesh_smoothing} smoothing, {texture} texture, {face_count:,} faces).",
+                }
+            ],
+            "face_count": face_count,
+            "dimensions": dimensions,
+        },
+    )
 
 
 def _stage(
@@ -106,12 +220,14 @@ def prepare_for_printing(
 ) -> MeshOpResult:
     """Repair until watertight, lay flat, scale in millimetres, rest on the plate."""
     output_path = _output_path(context, "prepare-for-printing")
-    with _scratch(context) as scratch:
+    with _scratch(context) as scratch_dir:
+        scratch = Path(scratch_dir)
         context.log("Preset: prepare for printing")
+        working_path, splat_step = _ensure_mesh_input(input_path, scratch, context)
         repaired = auto_repair_mesh(
-            input_path,
+            working_path,
             {"fill_holes": True},
-            _stage(context, 0, 60, Path(scratch) / "repaired.glb"),
+            _stage(context, 0, 60, scratch / "repaired.glb"),
         )
         repair = dict(repaired.details)
 
@@ -121,30 +237,34 @@ def prepare_for_printing(
             "drop_to_ground": {},
         }
         arranged = apply_transforms(
-            repaired.file_path or input_path,
+            repaired.file_path or working_path,
             list(requested.items()),
             output_path,
             _stage(context, 60, 100),
         )
 
     face_count, dimensions = _measure(output_path)
+    steps = [
+        {
+            "op": "repair_mesh",
+            "summary": (
+                f"Repaired in {repair['passes']} pass(es) ({', '.join(repair['steps'])})."
+                if repair.get("repaired")
+                else "Nothing to repair: the mesh was already closed and manifold."
+            ),
+            "repaired": bool(repair.get("repaired")),
+            "passes": repair.get("passes", 0),
+            "steps": list(repair.get("steps") or []),
+        },
+        *_arrange_steps(arranged.details["applied"], requested),
+    ]
+    if splat_step:
+        steps.insert(0, splat_step)
+
     return MeshOpResult(
         file_path=output_path,
         details={
-            "steps": [
-                {
-                    "op": "repair_mesh",
-                    "summary": (
-                        f"Repaired in {repair['passes']} pass(es) ({', '.join(repair['steps'])})."
-                        if repair.get("repaired")
-                        else "Nothing to repair: the mesh was already closed and manifold."
-                    ),
-                    "repaired": bool(repair.get("repaired")),
-                    "passes": repair.get("passes", 0),
-                    "steps": list(repair.get("steps") or []),
-                },
-                *_arrange_steps(arranged.details["applied"], requested),
-            ],
+            "steps": steps,
             "watertight": bool(repair["after"]["is_watertight"]),
             "remaining_issues": list(repair.get("remaining_issues") or []),
             "face_count": face_count,
@@ -199,7 +319,8 @@ def prepare_for_game(
     with _scratch(context) as scratch_dir:
         scratch = Path(scratch_dir)
         context.log("Preset: prepare for game")
-        decimated, decimate_step = _decimate(input_path, params["target_faces"], scratch, context)
+        working_path, splat_step = _ensure_mesh_input(input_path, scratch, context)
+        decimated, decimate_step = _decimate(working_path, params["target_faces"], scratch, context)
 
         requested = {"normalize_scale": _scale(params["size_m"], "m", params["dimension"])}
         scaled = apply_transforms(
@@ -208,10 +329,10 @@ def prepare_for_game(
         context.progress(85, "Recomputing normals…")
         recompute_normals(scaled.file_path, output_path)
     context.progress(100, "Done")
-    return _finish(
-        output_path,
-        [decimate_step, *_arrange_steps(scaled.details["applied"], requested), NORMALS_STEP],
-    )
+    steps = [decimate_step, *_arrange_steps(scaled.details["applied"], requested), NORMALS_STEP]
+    if splat_step:
+        steps.insert(0, splat_step)
+    return _finish(output_path, steps)
 
 
 def prepare_for_web(
@@ -222,11 +343,16 @@ def prepare_for_web(
     """Decimate aggressively for a light download, then recompute the normals."""
     output_path = _output_path(context, "prepare-for-web")
     with _scratch(context) as scratch_dir:
+        scratch = Path(scratch_dir)
         context.log("Preset: prepare for web")
+        working_path, splat_step = _ensure_mesh_input(input_path, scratch, context)
         decimated, decimate_step = _decimate(
-            input_path, params["target_faces"], Path(scratch_dir), context
+            working_path, params["target_faces"], scratch, context
         )
         context.progress(80, "Recomputing normals…")
         recompute_normals(decimated, output_path)
     context.progress(100, "Done")
-    return _finish(output_path, [decimate_step, NORMALS_STEP])
+    steps = [decimate_step, NORMALS_STEP]
+    if splat_step:
+        steps.insert(0, splat_step)
+    return _finish(output_path, steps)

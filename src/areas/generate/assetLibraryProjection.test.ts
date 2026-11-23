@@ -68,6 +68,7 @@ test('degrades unsafe source and manifest paths and unsupported formats to unava
     manifest: { workspacePath: '../secret.scene.json', capability: 'scene-manifest' },
   })
   const splat = projectAssetLibraryEntry({ ...glbEntry, id: 'splat', workspacePath: 'Workflows/scan.splat', displayName: 'scan.splat', openable: true })
+  const textDoc = projectAssetLibraryEntry({ ...glbEntry, id: 'doc', workspacePath: 'Workflows/notes.txt', displayName: 'notes.txt', openable: false })
 
   assert.equal(projected.source, undefined)
   assert.equal(projected.manifest, undefined)
@@ -77,8 +78,13 @@ test('degrades unsafe source and manifest paths and unsupported formats to unava
     reason: 'Workspace asset is not openable.',
   })
   assert.deepEqual(resolveAssetLibraryOpenTarget(splat), {
+    kind: 'self',
+    url: '/workspace/Workflows/scan.splat',
+    workspacePath: 'Workflows/scan.splat',
+  })
+  assert.deepEqual(resolveAssetLibraryOpenTarget(textDoc), {
     kind: 'unavailable',
-    reason: 'Only safe .glb/.gltf workspace assets are openable in this release.',
+    reason: 'Workspace asset is not openable.',
   })
 })
 

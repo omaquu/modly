@@ -193,12 +193,12 @@ export type RunOpenTarget =
   | { openable: true, workspacePath: string, url: string }
   | { openable: false, reason: string }
 
-const MESH_EXTENSIONS = /\.(glb|gltf)$/i
+const MESH_EXTENSIONS = /\.(glb|gltf|ply|splat)$/i
 const AUDIO_EXTENSIONS = /\.(wav|mp3|ogg|flac|m4a)$/i
 const SCENE_EXTENSIONS = /\.json$/i
 
 /**
- * What a finished run's output opens as. Only workspace meshes (.glb/.gltf)
+ * What a finished run's output opens as. Workspace models (.glb/.gltf/.ply/.splat)
  * open in Generate and show in the Library; output_path is workspace-relative
  * for those, absolute when the output lives elsewhere.
  */
@@ -211,6 +211,6 @@ export function runOpenTarget(row: Pick<QueueRow, 'status' | 'outputPath'>): Run
   }
   if (AUDIO_EXTENSIONS.test(path)) return { openable: false, reason: 'Audio outputs cannot be opened in the 3D viewer.' }
   if (SCENE_EXTENSIONS.test(path)) return { openable: false, reason: 'Scene outputs cannot be opened from the Queue yet.' }
-  if (!MESH_EXTENSIONS.test(path)) return { openable: false, reason: 'Only .glb and .gltf outputs can be opened.' }
+  if (!MESH_EXTENSIONS.test(path)) return { openable: false, reason: 'Only .glb, .gltf, .ply and .splat outputs can be opened.' }
   return { openable: true, workspacePath: path, url: `/workspace/${path}` }
 }

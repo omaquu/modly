@@ -112,7 +112,7 @@ function extensionOf(workspacePath: string): string {
 }
 
 function isGlbOrGltf(workspacePath: string): boolean {
-  return /\.(glb|gltf)$/i.test(workspacePath)
+  return /\.(glb|gltf|ply|splat)$/i.test(workspacePath)
 }
 
 function sourceScopeFor(workspacePath: string): AssetLibrarySourceScope {
@@ -134,7 +134,7 @@ export function classifyAssetLibraryCandidate(candidate: AssetLibraryClassificat
   if (INTRINSIC_MOTION_EXTENSIONS.has(extension)) {
     return { capability: 'animation-motion', state: 'ready', previewKind: 'binary', openable: false, nonOpenableReason: 'Motion files are list-only in this release.' }
   }
-  if (extension === 'glb' || extension === 'gltf') {
+  if (extension === 'glb' || extension === 'gltf' || extension === 'ply' || extension === 'splat') {
     return { capability: candidate.hasRigMetadata ? 'rigged-mesh' : 'mesh', state: 'ready', previewKind: '3d-model', openable: true }
   }
   if (MESH_EXTENSIONS.has(extension)) {

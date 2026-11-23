@@ -60,9 +60,11 @@ def _face_count(mesh, trimesh_module) -> int:
 
 
 def _has_texture(geometry, trimesh_module) -> bool:
-    if not isinstance(geometry.visual, trimesh_module.visual.TextureVisuals):
+    visual = getattr(geometry, "visual", None)
+    texture_visuals_cls = getattr(getattr(trimesh_module, "visual", None), "TextureVisuals", None)
+    if visual is None or texture_visuals_cls is None or not isinstance(visual, texture_visuals_cls):
         return False
-    material = geometry.visual.material
+    material = getattr(visual, "material", None)
     if material is None:
         return False
     return (
@@ -126,12 +128,25 @@ def repair_mesh(
 
     temporary_dir = tempfile.mkdtemp()
     try:
-        ply_input = os.path.join(temporary_dir, "input.ply")
-        ply_output = os.path.join(temporary_dir, "output.ply")
-        geometry.export(ply_input)
+        has_tex = _has_texture(geometry, trimesh)
+        if has_tex:
+            obj_input = os.path.join(temporary_dir, "input.obj")
+            texture_input = os.path.join(temporary_dir, "texture.png")
+            obj_output = os.path.join(temporary_dir, "output.obj")
 
-        mesh_set = pymeshlab.MeshSet()
-        mesh_set.load_new_mesh(ply_input)
+            _texture_image(geometry).save(texture_input)
+            geometry.export(obj_input)
+            _point_mtl_at_texture(os.path.join(temporary_dir, "input.mtl"))
+
+            mesh_set = pymeshlab.MeshSet()
+            mesh_set.load_new_mesh(obj_input)
+        else:
+            ply_input = os.path.join(temporary_dir, "input.ply")
+            ply_output = os.path.join(temporary_dir, "output.ply")
+            geometry.export(ply_input)
+
+            mesh_set = pymeshlab.MeshSet()
+            mesh_set.load_new_mesh(ply_input)
 
         current = mesh_set.current_mesh()
         context.log(
@@ -181,8 +196,13 @@ def repair_mesh(
         )
 
         context.progress(85, "Exporting…")
-        mesh_set.save_current_mesh(ply_output)
-        result = _raw_geometry(ply_output, trimesh)
+        if has_tex:
+            mesh_set.save_current_mesh(obj_output)
+            _point_mtl_at_texture(obj_output.replace(".obj", ".mtl"))
+            result = trimesh.load(obj_output)
+        else:
+            mesh_set.save_current_mesh(ply_output)
+            result = _raw_geometry(ply_output, trimesh)
     finally:
         shutil.rmtree(temporary_dir, ignore_errors=True)
 

@@ -3,7 +3,7 @@
 from .agent_format import format_fixes, format_inspection, format_preset, format_repair
 from .inspection import inspect_mesh, suggest_fixes
 from .operations import decimate_mesh, repair_mesh, smooth_mesh
-from .presets import prepare_for_game, prepare_for_printing, prepare_for_web
+from .presets import prepare_for_game, prepare_for_printing, prepare_for_web, splat_to_mesh
 from .repair import auto_repair_mesh
 from .transforms import auto_orient, drop_to_ground, normalize_scale, recenter, set_real_scale
 from .types import AgentTool, MeshOp
@@ -285,6 +285,61 @@ PREPARE_FOR_WEB_PARAMS = (
     },
 )
 
+SPLAT_TO_MESH_PARAMS = (
+    {
+        "id": "mesh_detail",
+        "label": "Mesh Detail",
+        "type": "select",
+        "default": 10,
+        "options": [
+            {"value": 10, "label": "Ultra (10 - best quality)"},
+            {"value": 9, "label": "High (9)"},
+            {"value": 8, "label": "Medium (8)"},
+            {"value": 7, "label": "Low (7)"},
+        ],
+        "tooltip": "Voxel grid resolution for surface extraction. 10 gives maximum geometric fidelity.",
+    },
+    {
+        "id": "texture",
+        "label": "Texture",
+        "type": "select",
+        "default": "Baked 4K",
+        "options": [
+            {"value": "Baked 4K", "label": "Baked 4K (4096×4096)"},
+            {"value": "Baked 2K", "label": "Baked 2K (2048×2048)"},
+            {"value": "Baked 1K", "label": "Baked 1K (1024×1024)"},
+            {"value": "Auto", "label": "Auto"},
+            {"value": "Vertex colors", "label": "Vertex Colors (no texture file)"},
+        ],
+        "tooltip": "Baked UV texture resolution. Baked 4K prevents pixelation.",
+    },
+    {
+        "id": "mesh_smoothing",
+        "label": "Mesh Smoothing",
+        "type": "select",
+        "default": "Medium",
+        "options": [
+            {"value": "None", "label": "None"},
+            {"value": "Light", "label": "Light"},
+            {"value": "Medium", "label": "Medium"},
+            {"value": "Strong", "label": "Strong"},
+        ],
+        "tooltip": "Taubin smoothing strength to remove volume extraction noise while preserving volume.",
+    },
+    {
+        "id": "color_mode",
+        "label": "Color Mode",
+        "type": "select",
+        "default": "Refined",
+        "options": [
+            {"value": "Refined", "label": "Refined (+render supervision)"},
+            {"value": "Vivid", "label": "Vivid (boosted saturation)"},
+            {"value": "Direct", "label": "Direct"},
+        ],
+        "tooltip": "Refined optimizes colors by rendering the mesh against original Gaussians.",
+    },
+)
+
 DIMENSION_HINT = "Which side gets the size: longest, x (width), y (height) or z (depth)."
 
 
@@ -469,6 +524,25 @@ BUILTIN_MESH_OPS = (
                 "aggressively and recompute its normals. Keeps its textures and size."
             ),
             params={"target_faces": "Triangle budget; lower means a lighter download."},
+            format_result=format_preset,
+        ),
+    ),
+    MeshOp(
+        id="splat_to_mesh",
+        label="Turn Splat to Mesh",
+        params_schema=SPLAT_TO_MESH_PARAMS,
+        fn=splat_to_mesh,
+        category="presets",
+        agent=AgentTool(
+            description=(
+                "Convert a Gaussian Splat (.ply or .splat) into a high-detail textured 3D mesh (GLB)."
+            ),
+            params={
+                "mesh_detail": "Reconstruction resolution (10 for Ultra / best quality).",
+                "texture": "Texture resolution (Baked 4K, Baked 2K, Baked 1K, Auto, Vertex colors).",
+                "mesh_smoothing": "Taubin smoothing: None, Light, Medium, Strong.",
+                "color_mode": "Refined, Vivid, Direct.",
+            },
             format_result=format_preset,
         ),
     ),

@@ -34,6 +34,7 @@ class MeshOpsRegistryTests(unittest.TestCase):
                 "prepare_for_printing",
                 "prepare_for_game",
                 "prepare_for_web",
+                "splat_to_mesh",
             ],
         )
         for description in descriptions:

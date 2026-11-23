@@ -39,7 +39,8 @@ test('classifies supported assets by capability instead of extension category', 
     capability: 'rigged-mesh', state: 'ready', previewKind: '3d-model', openable: true,
   })
   assert.equal(classifyAssetLibraryCandidate({ workspacePath: 'Workflows/motion.bvh' }).capability, 'animation-motion')
-  assert.equal(classifyAssetLibraryCandidate({ workspacePath: 'Workflows/scan.splat' }).openable, false)
+  assert.equal(classifyAssetLibraryCandidate({ workspacePath: 'Workflows/scan.splat' }).openable, true)
+  assert.equal(classifyAssetLibraryCandidate({ workspacePath: 'Workflows/notes.txt' }).openable, false)
   assert.equal(classifyAssetLibraryCandidate({ workspacePath: 'Workflows/notes.txt' }).state, 'unsupported')
 })
 
@@ -53,15 +54,18 @@ test('lists Workflows and Exports assets while skipping hidden, cache, and inter
   await writeFile(path.join(workspaceDir, 'Workflows/.hidden/private.glb'), 'glb')
   await writeFile(path.join(workspaceDir, 'Workflows/cache/temp.glb'), 'glb')
   await writeFile(path.join(workspaceDir, 'Exports/exported.ply'), 'ply')
+  await writeFile(path.join(workspaceDir, 'Exports/motion.bvh'), 'bvh')
 
   const result = await listWorkspaceAssetLibrary({ workspaceDir })
   assert.equal(result.success, true)
   assert.deepEqual(result.success && result.entries.map((entry) => entry.workspacePath), [
     'Exports/exported.ply',
+    'Exports/motion.bvh',
     'Workflows/checkpoints/hero.glb',
   ])
   assert.equal(result.success && result.entries.find((entry) => entry.workspacePath.endsWith('hero.glb'))?.capability, 'rigged-mesh')
-  assert.equal(result.success && result.entries.find((entry) => entry.workspacePath.endsWith('exported.ply'))?.openable, false)
+  assert.equal(result.success && result.entries.find((entry) => entry.workspacePath.endsWith('exported.ply'))?.openable, true)
+  assert.equal(result.success && result.entries.find((entry) => entry.workspacePath.endsWith('motion.bvh'))?.openable, false)
 }))
 
 test('registers a generated scene directory through its canonical manifest artifact', () => withWorkspace(async (workspaceDir) => {
@@ -76,11 +80,11 @@ test('registers a generated scene directory through its canonical manifest artif
   assert.equal(scene && scene.state, 'ready')
 }))
 
-test('reads and opens only safe GLB/GLTF workspace assets', () => withWorkspace(async (workspaceDir) => {
+test('reads and opens only safe GLB/GLTF/PLY/SPLAT workspace assets', () => withWorkspace(async (workspaceDir) => {
   await mkdir(path.join(workspaceDir, 'Workflows/checkpoints'), { recursive: true })
   await mkdir(path.join(workspaceDir, 'Exports'), { recursive: true })
   await writeFile(path.join(workspaceDir, 'Workflows/checkpoints/hero.glb'), 'glb')
-  await writeFile(path.join(workspaceDir, 'Exports/static.ply'), 'ply')
+  await writeFile(path.join(workspaceDir, 'Exports/motion.bvh'), 'bvh')
 
   const read = await readWorkspaceAssetLibraryEntry({ workspaceDir, workspacePath: 'Workflows/checkpoints/hero.glb' })
   assert.equal(read.success, true)
@@ -88,7 +92,7 @@ test('reads and opens only safe GLB/GLTF workspace assets', () => withWorkspace(
   const opened = await openWorkspaceAssetLibraryEntry({ workspaceDir, workspacePath: 'Workflows/checkpoints/hero.glb' })
   assert.equal(opened.success, true)
   assert.equal(opened.success && opened.entry.openable, true)
-  const blocked = await openWorkspaceAssetLibraryEntry({ workspaceDir, workspacePath: 'Exports/static.ply' })
+  const blocked = await openWorkspaceAssetLibraryEntry({ workspaceDir, workspacePath: 'Exports/motion.bvh' })
   assert.equal(blocked.success, false)
   assert.equal(!blocked.success && blocked.error.code, 'not-openable')
   const unsafe = await readWorkspaceAssetLibraryEntry({ workspaceDir, workspacePath: '../secret.glb' })

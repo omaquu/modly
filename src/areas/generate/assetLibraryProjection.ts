@@ -30,7 +30,7 @@ function isSafeWorkspacePath(workspacePath: string): boolean {
 }
 
 function isGlbOrGltf(workspacePath: string): boolean {
-  return /\.(glb|gltf)$/i.test(workspacePath)
+  return /\.(glb|gltf|ply|splat)$/i.test(workspacePath)
 }
 
 export function projectAssetLibraryEntry(entry: AssetLibraryEntry): ProjectedAssetLibraryEntry {
@@ -64,7 +64,7 @@ export function resolveAssetLibraryOpenTarget(entry: ProjectedAssetLibraryEntry)
     return { kind: 'unavailable', reason: entry.nonOpenableReason ?? 'Workspace asset is not openable.' }
   }
   if (!isGlbOrGltf(entry.workspacePath)) {
-    return { kind: 'unavailable', reason: 'Only safe .glb/.gltf workspace assets are openable in this release.' }
+    return { kind: 'unavailable', reason: 'Only safe .glb/.gltf/.ply/.splat workspace assets are openable in this release.' }
   }
   return { kind: 'self', url: `/workspace/${entry.workspacePath}`, workspacePath: entry.workspacePath }
 }

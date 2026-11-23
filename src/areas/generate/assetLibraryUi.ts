@@ -88,7 +88,7 @@ export function describeAssetLibraryOpenability(entry: ProjectedAssetLibraryEntr
   if (target.kind === 'linked-source') return `Ready to open linked source ${entry.source?.displayName ?? target.sourceWorkspacePath} in Generate.`
   if (target.kind === 'self') return 'Ready to open this asset directly in Generate.'
   if (entry.nonOpenableReason) return entry.nonOpenableReason
-  if (!/\.(glb|gltf)$/i.test(entry.workspacePath)) return 'Only .glb/.gltf workspace assets are openable in this release.'
+  if (!/\.(glb|gltf|ply|splat)$/i.test(entry.workspacePath)) return 'Only .glb/.gltf/.ply/.splat workspace assets are openable in this release.'
   return target.reason
 }
 
