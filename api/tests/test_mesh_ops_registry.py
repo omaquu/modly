@@ -36,6 +36,7 @@ class MeshOpsRegistryTests(unittest.TestCase):
                 "prepare_for_web",
                 "splat_to_mesh",
                 "tune_splat",
+                "restore_texture",
             ],
         )
         for description in descriptions:

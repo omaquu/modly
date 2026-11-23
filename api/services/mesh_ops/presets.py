@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 
 from .geometry import merged_geometry, scene_meshes
-from .operations import _output_path, decimate_mesh
+from .operations import _mesh_libraries, _output_path, decimate_mesh
 from .repair import auto_repair_mesh
 from .transforms import DIMENSION_NAMES, UNIT_SCALE, _trimesh, apply_transforms
 from .types import MeshOpContext, MeshOpExecutionError, MeshOpResult
@@ -508,5 +508,123 @@ print(f"DONE:{orig_count}:{final_count}")
             "original_count": orig_c,
             "final_count": final_c,
             "reduction_percent": round(reduction, 1),
+        },
+    )
+
+
+def restore_texture(
+    input_path: Path,
+    params: Mapping[str, Any],
+    context: MeshOpContext,
+) -> MeshOpResult:
+    """Transfer or re-project textures from the original model onto an untextured or repaired mesh."""
+    output_path = _output_path(context, "restore-texture")
+    context.log("Preset: restore texture")
+    context.progress(10, "Locating source textured mesh…")
+
+    source_path_str = str(params.get("source_mesh", "")).strip()
+    source_path: Optional[Path] = None
+    if source_path_str:
+        candidate = Path(source_path_str)
+        if candidate.is_file():
+            source_path = candidate
+        elif (context.workspace_dir / source_path_str).is_file():
+            source_path = context.workspace_dir / source_path_str
+
+    # Auto-detect source mesh if not provided:
+    # 1. Strip suffix like _repair_mesh_... or _decimate_... to find original
+    if not source_path:
+        stem = input_path.stem
+        for tag in ("_repair_mesh_", "_decimate_", "_prepare_", "_smooth_"):
+            if tag in stem:
+                base_stem = stem.split(tag)[0]
+                parent_dir = input_path.parent
+                candidates = sorted(list(parent_dir.glob(f"{base_stem}*.glb")), key=lambda p: p.stat().st_mtime, reverse=True)
+                for c in candidates:
+                    if c != input_path and "_repair_mesh_" not in c.name:
+                        source_path = c
+                        break
+                if source_path:
+                    break
+
+    # 2. Check parent folder for matching base ID
+    if not source_path and "_" in input_path.stem:
+        parts = input_path.stem.split("_")
+        prefix = f"{parts[0]}_{parts[1]}"
+        for c in sorted(list(input_path.parent.glob(f"{prefix}*.glb")), key=lambda p: p.stat().st_mtime, reverse=True):
+            if c != input_path and "_repair_mesh_" not in c.name:
+                source_path = c
+                break
+
+    if not source_path or not source_path.is_file():
+        raise MeshOpExecutionError("No source textured model found. Please specify the path in `source_mesh`.")
+
+    context.log(f"Restoring textures from: {source_path.name}")
+    context.progress(30, f"Loading geometry from {source_path.name}…")
+
+    pymeshlab, trimesh = _mesh_libraries("restore_texture")
+    from scipy.spatial import cKDTree
+    import numpy as np
+
+    orig_scene = trimesh.load(str(source_path), process=False)
+    target_scene = trimesh.load(str(input_path), process=False)
+
+    orig_parts = scene_meshes(orig_scene, trimesh)
+    target_parts = scene_meshes(target_scene, trimesh)
+
+    if not orig_parts or not target_parts:
+        raise MeshOpExecutionError("Could not load meshes for texture restoration.")
+
+    orig_geom, _ = orig_parts[0]
+    target_geom, _ = target_parts[0]
+
+    has_tex = hasattr(orig_geom, "visual") and hasattr(orig_geom.visual, "material") and hasattr(orig_geom.visual, "uv") and orig_geom.visual.uv is not None
+    has_vc = hasattr(orig_geom, "visual") and hasattr(orig_geom.visual, "vertex_colors") and orig_geom.visual.vertex_colors is not None
+
+    if not has_tex and not has_vc:
+        raise MeshOpExecutionError(f"Source model {source_path.name} has neither textures nor vertex colors.")
+
+    context.progress(60, "Transferring UV mapping and textures…")
+    orig_verts = np.asarray(orig_geom.vertices, dtype=np.float64)
+    target_verts = np.asarray(target_geom.vertices, dtype=np.float64)
+
+    kdtree = cKDTree(orig_verts)
+    _, idxs = kdtree.query(target_verts)
+
+    if has_tex:
+        orig_uvs = np.asarray(orig_geom.visual.uv, dtype=np.float32)
+        new_uvs = orig_uvs[idxs]
+        visual = trimesh.visual.TextureVisuals(uv=new_uvs, material=orig_geom.visual.material)
+    else:
+        orig_colors = np.asarray(orig_geom.visual.vertex_colors)
+        new_colors = orig_colors[idxs]
+        visual = trimesh.visual.ColorVisuals(mesh=None, vertex_colors=new_colors)
+
+    restored = trimesh.Trimesh(
+        vertices=target_geom.vertices,
+        faces=target_geom.faces,
+        visual=visual,
+        process=False
+    )
+
+    context.progress(85, "Saving textured mesh…")
+    restored.export(str(output_path))
+
+    context.progress(95, "Measuring mesh…")
+    face_count, dimensions = _measure(output_path)
+    context.progress(100, "Done")
+
+    return MeshOpResult(
+        file_path=output_path,
+        details={
+            "steps": [
+                {
+                    "op": "restore_texture",
+                    "summary": f"Restored textures from {source_path.name} onto {input_path.name} ({face_count:,} faces).",
+                }
+            ],
+            "source_mesh": str(source_path),
+            "face_count": face_count,
+            "dimensions": dimensions,
         },
     )

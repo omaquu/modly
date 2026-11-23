@@ -3,7 +3,7 @@
 from .agent_format import format_fixes, format_inspection, format_preset, format_repair
 from .inspection import inspect_mesh, suggest_fixes
 from .operations import decimate_mesh, repair_mesh, smooth_mesh
-from .presets import prepare_for_game, prepare_for_printing, prepare_for_web, splat_to_mesh, tune_splat
+from .presets import prepare_for_game, prepare_for_printing, prepare_for_web, restore_texture, splat_to_mesh, tune_splat
 from .repair import auto_repair_mesh
 from .transforms import auto_orient, drop_to_ground, normalize_scale, recenter, set_real_scale
 from .types import AgentTool, MeshOp
@@ -217,6 +217,23 @@ REPAIR_MESH_PARAMS = (
             "meant to stay open, such as terrain: only flipped faces are then "
             "fixed, since removing bad faces would open new holes."
         ),
+    },
+    {
+        "id": "preserve_textures",
+        "label": "Preserve Textures",
+        "type": "boolean",
+        "default": True,
+        "tooltip": "Preserve and transfer original UVs and textures onto the repaired mesh.",
+    },
+)
+
+RESTORE_TEXTURE_PARAMS = (
+    {
+        "id": "source_mesh",
+        "label": "Source Mesh (Textured)",
+        "type": "string",
+        "default": "",
+        "tooltip": "Path to original textured model (.glb). Leave blank to auto-detect pre-repair mesh in the same folder.",
     },
 )
 
@@ -585,6 +602,22 @@ BUILTIN_MESH_OPS = (
             params={
                 "target_gaussians": "Target gaussian count (500k, 262k, 131k, 65k).",
                 "min_opacity": "Minimum opacity threshold to prune floaters.",
+            },
+            format_result=format_preset,
+        ),
+    ),
+    MeshOp(
+        id="restore_texture",
+        label="Restore Texture (Transfer)",
+        params_schema=RESTORE_TEXTURE_PARAMS,
+        fn=restore_texture,
+        category="presets",
+        agent=AgentTool(
+            description=(
+                "Restore textures from the original model onto a repaired or untextured mesh via spatial UV transfer."
+            ),
+            params={
+                "source_mesh": "Optional path to the source textured model (.glb). Auto-detected if omitted.",
             },
             format_result=format_preset,
         ),
