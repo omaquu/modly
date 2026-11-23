@@ -44,7 +44,7 @@ export async function requestLibraryThumbnails(entries: AssetLibraryEntry[]): Pr
  * the result lands in the thumbnail store, keyed by `workspacePath`.
  */
 export function ensureThumbnail(workspacePath: string): void {
-  if (!/\.(glb|gltf)$/i.test(workspacePath)) return
+  if (!/\.(glb|gltf|ply|splat)$/i.test(workspacePath)) return
   void getQueue().ensure(workspacePath)
 }
 

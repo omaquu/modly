@@ -55,7 +55,7 @@ export function normalizeThumbnailSourcePath(workspaceDir: string, workspacePath
   const segments = normalized.split('/').filter((segment) => segment && segment !== '.')
   if (segments.length === 0 || segments.includes('..')) throw new Error('Thumbnail source path must not contain traversal segments')
   const safePath = segments.join('/')
-  if (!/\.(glb|gltf)$/i.test(safePath)) throw new Error('Only .glb/.gltf meshes have thumbnails')
+  if (!/\.(glb|gltf|ply|splat)$/i.test(safePath)) throw new Error('Only .glb/.gltf/.ply/.splat assets have thumbnails')
   const root = resolve(workspaceDir)
   const absolutePath = resolve(root, ...segments)
   const back = relative(root, absolutePath)

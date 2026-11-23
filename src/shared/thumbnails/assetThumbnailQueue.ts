@@ -25,7 +25,7 @@ export function workspacePathFromMeshUrl(url: string): string | null {
   } catch {
     return null
   }
-  return /\.(glb|gltf)$/i.test(workspacePath) ? workspacePath : null
+  return /\.(glb|gltf|ply|splat)$/i.test(workspacePath) ? workspacePath : null
 }
 
 export function meshUrlForWorkspacePath(apiUrl: string, workspacePath: string): string {
