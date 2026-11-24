@@ -562,8 +562,9 @@ def ply_to_splat(path: str):
 
 @router.get("/export")
 def export_mesh(path: str, format: str):
-    if format not in ("obj", "stl", "ply"):
-        raise HTTPException(400, "Supported formats: obj, stl, ply")
+    format_lower = format.lower()
+    if format_lower not in ("obj", "stl", "ply", "glb"):
+        raise HTTPException(400, "Supported formats: obj, stl, ply, glb")
 
     input_path = (registry.WORKSPACE_DIR / path).resolve()
     if not registry.is_within_workspace(input_path):
@@ -571,21 +572,65 @@ def export_mesh(path: str, format: str):
     if not input_path.exists():
         raise HTTPException(404, f"File not found: {path}")
 
+    stem = input_path.stem
+    exports_dir = registry.WORKSPACE_DIR / "Exports"
+    exports_dir.mkdir(parents=True, exist_ok=True)
+
+    if format_lower == "glb" and input_path.suffix.lower() == ".glb":
+        data = input_path.read_bytes()
+        try:
+            (exports_dir / f"{stem}.glb").write_bytes(data)
+        except Exception:
+            pass
+        return Response(
+            content=data,
+            media_type="model/gltf-binary",
+            headers={"Content-Disposition": f'attachment; filename="{stem}.glb"'},
+        )
+
+    if format_lower == "ply" and input_path.suffix.lower() == ".ply":
+        data = input_path.read_bytes()
+        try:
+            (exports_dir / f"{stem}.ply").write_bytes(data)
+        except Exception:
+            pass
+        return Response(
+            content=data,
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{stem}.ply"'},
+        )
+
     # Flatten to a single mesh in world space (node transforms applied).
     try:
         mesh = single_mesh(trimesh.load(str(input_path)), trimesh)
     except ValueError as exc:
+        if format_lower == "ply" and input_path.suffix.lower() == ".ply":
+            data = input_path.read_bytes()
+            try:
+                (exports_dir / f"{stem}.ply").write_bytes(data)
+            except Exception:
+                pass
+            return Response(
+                content=data,
+                media_type="application/octet-stream",
+                headers={"Content-Disposition": f'attachment; filename="{stem}.ply"'},
+            )
         raise HTTPException(422, str(exc)) from exc
-    scale = export_scale(input_path, format)
+    scale = export_scale(input_path, format_lower)
     if scale != 1.0:
         mesh.apply_scale(scale)
 
-    data = mesh.export(file_type=format)
-    stem = input_path.stem
-    mime = "text/plain" if format == "obj" else "application/octet-stream"
+    data = mesh.export(file_type=format_lower)
+    # Save a copy to Exports directory so it immediately appears in the Library under Exports
+    try:
+        (exports_dir / f"{stem}.{format_lower}").write_bytes(data if isinstance(data, bytes) else data.encode("utf-8"))
+    except Exception:
+        pass
+
+    mime = "text/plain" if format_lower == "obj" else "application/octet-stream"
     # trimesh exports ply as bytes even in text mode — octet-stream is fine for all binary formats
     return Response(
         content=data,
         media_type=mime,
-        headers={"Content-Disposition": f'attachment; filename="{stem}.{format}"'},
+        headers={"Content-Disposition": f'attachment; filename="{stem}.{format_lower}"'},
     )

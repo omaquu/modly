@@ -301,12 +301,50 @@ def export_mesh(fmt: str, path: str):
         raise HTTPException(400, f"Unsupported format: {fmt}. Supported: {', '.join(SUPPORTED)}")
 
     full_path = _workspace_source(path)
+    stem = full_path.stem
+    exports_dir = registry.WORKSPACE_DIR / "Exports"
+    exports_dir.mkdir(parents=True, exist_ok=True)
 
     # GLB — serve directly, no conversion needed
     if fmt == "glb":
-        return FileResponse(str(full_path), media_type="model/gltf-binary")
+        try:
+            (exports_dir / f"{stem}.glb").write_bytes(full_path.read_bytes())
+        except Exception:
+            pass
+        return FileResponse(
+            str(full_path),
+            media_type="model/gltf-binary",
+            headers={"Content-Disposition": f'attachment; filename="{stem}.glb"'},
+        )
 
-    mesh = _load_for_export(full_path, fmt)
+    # PLY — serve directly if source is already a .ply file
+    if fmt == "ply" and full_path.suffix.lower() == ".ply":
+        data = full_path.read_bytes()
+        try:
+            (exports_dir / f"{stem}.ply").write_bytes(data)
+        except Exception:
+            pass
+        return Response(
+            content=data,
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{stem}.ply"'},
+        )
+
+    try:
+        mesh = _load_for_export(full_path, fmt)
+    except HTTPException:
+        if fmt == "ply" and full_path.suffix.lower() == ".ply":
+            data = full_path.read_bytes()
+            try:
+                (exports_dir / f"{stem}.ply").write_bytes(data)
+            except Exception:
+                pass
+            return Response(
+                content=data,
+                media_type="application/octet-stream",
+                headers={"Content-Disposition": f'attachment; filename="{stem}.ply"'},
+            )
+        raise
 
     buf = io.BytesIO()
     if fmt == "stl":
@@ -320,4 +358,14 @@ def export_mesh(fmt: str, path: str):
         media_type = "text/plain"
 
     buf.seek(0)
-    return Response(content=buf.read(), media_type=media_type)
+    data = buf.read()
+    try:
+        (exports_dir / f"{stem}.{fmt}").write_bytes(data if isinstance(data, bytes) else data.encode("utf-8"))
+    except Exception:
+        pass
+
+    return Response(
+        content=data,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{stem}.{fmt}"'},
+    )

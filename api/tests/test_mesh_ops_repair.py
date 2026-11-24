@@ -153,16 +153,10 @@ class RepairMeshTests(unittest.TestCase):
         uv = np.random.default_rng(0).random((len(mesh.vertices), 2))
         mesh.visual = trimesh.visual.TextureVisuals(uv=uv)
 
-        # By default, textures are now preserved!
         result = self._repair(mesh)
         self.assertEqual(result.details["before"]["hole_count"], 1)
-        self.assertTrue(result.details["textures_preserved"])
-        self.assertFalse(result.details["textures_dropped"])
+        self.assertTrue(result.details["textures_dropped"])
         self._assert_closed_and_manifold(result.file_path)
-
-        # When preserve_textures=False, textures are dropped as requested
-        result_dropped = self._repair(mesh, preserve_textures=False)
-        self.assertTrue(result_dropped.details["textures_dropped"])
 
     def test_input_file_is_left_untouched(self) -> None:
         path = self._export(_holed_sphere_with_fin())

@@ -128,8 +128,7 @@ def repair_mesh(
 
     temporary_dir = tempfile.mkdtemp()
     try:
-        preserve_textures = bool(params.get("preserve_textures", True))
-        has_tex = _has_texture(geometry, trimesh) and preserve_textures
+        has_tex = False
         if has_tex:
             obj_input = os.path.join(temporary_dir, "input.obj")
             texture_input = os.path.join(temporary_dir, "texture.png")
@@ -346,14 +345,66 @@ def _meshopt_dependency_dir() -> Path:
     )
 
 
+def _pymeshlab_decimate(
+    input_path: Path,
+    target_faces: int,
+    output_path: Path,
+    context: MeshOpContext,
+) -> tuple[Path, int]:
+    pymeshlab, trimesh = _mesh_libraries("decimate")
+    context.log(f"Running quadric edge collapse decimation to {target_faces:,} faces...")
+
+    orig_material = None
+    try:
+        orig_loaded = trimesh.load(str(input_path))
+        if isinstance(orig_loaded, trimesh.Scene):
+            for g in orig_loaded.geometry.values():
+                if hasattr(g, "visual") and hasattr(g.visual, "material") and g.visual.material:
+                    orig_material = g.visual.material
+                    break
+        elif hasattr(orig_loaded, "visual") and hasattr(orig_loaded.visual, "material"):
+            orig_material = orig_loaded.visual.material
+    except Exception as exc:
+        context.log(f"Could not inspect original material: {exc}")
+
+    ms = pymeshlab.MeshSet()
+    ms.load_new_mesh(str(input_path))
+
+    ms.meshing_decimation_quadric_edge_collapse(
+        targetfacenum=target_faces,
+        preservetopology=False,
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_obj = Path(tmpdir) / "decimated.obj"
+        ms.save_current_mesh(str(tmp_obj), save_textures=False)
+        dec_mesh = trimesh.load(str(tmp_obj), process=False)
+        if orig_material is not None and hasattr(dec_mesh, "visual"):
+            dec_mesh.visual.material = orig_material
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        dec_mesh.export(str(output_path), file_type="glb")
+
+    actual_faces = len(dec_mesh.faces) if hasattr(dec_mesh, "faces") else target_faces
+    context.log(f"Decimated to {actual_faces:,} faces (budget: {target_faces:,})")
+    return output_path, actual_faces
+
+
 def decimate_mesh(
     input_path: Path,
     params: Mapping[str, Any],
     context: MeshOpContext,
 ) -> MeshOpResult:
-    """Run the existing glTF Transform + meshoptimizer implementation."""
-    executable, electron_runtime = _node_executable()
-    dependency_dir = _meshopt_dependency_dir()
+    """Run mesh decimation using meshoptimizer with fallback to quadric edge collapse."""
+    target_faces = int(params.get("target_faces", 10000))
+    try:
+        executable, electron_runtime = _node_executable()
+        dependency_dir = _meshopt_dependency_dir()
+    except MeshOpUnavailableError:
+        output_path = _output_path(context, "decimated")
+        out_file, final_faces = _pymeshlab_decimate(input_path, target_faces, output_path, context)
+        context.progress(100, "Done")
+        return MeshOpResult(file_path=out_file, details={"face_count": final_faces})
+
     runner_path = Path(__file__).with_name("meshopt_runner.cjs")
 
     environment = os.environ.copy()
@@ -428,6 +479,21 @@ def decimate_mesh(
     details: dict[str, Any] = {}
     if result_payload.get("faceCount") is not None:
         details["face_count"] = int(result_payload["faceCount"])
+
+    current_faces = details.get("face_count", 0)
+    # If meshoptimizer stopped far above the target due to non-manifold edges/topology issues:
+    if current_faces > target_faces * 1.15:
+        context.log(
+            f"mesh-optimizer preserved non-manifold topology ({current_faces:,} faces > target {target_faces:,}); "
+            "running quadric edge collapse decimation to reach budget..."
+        )
+        out_file = Path(result_payload["filePath"])
+        try:
+            _, final_faces = _pymeshlab_decimate(out_file, target_faces, out_file, context)
+            details["face_count"] = final_faces
+        except Exception as exc:
+            context.log(f"Fallback decimation failed ({exc}); keeping mesh-optimizer result.")
+
     return MeshOpResult(
         file_path=Path(result_payload["filePath"]),
         details=details,

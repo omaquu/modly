@@ -188,36 +188,6 @@ def auto_repair_mesh(
     if not len(mesh.faces):
         raise MeshOpExecutionError("repair_mesh: the repair left no faces")
 
-    # Transfer textures/materials from original input mesh if present
-    preserve_textures = bool(params.get("preserve_textures", True))
-    textures_preserved = False
-    if preserve_textures and (has_textures or (parts and hasattr(parts[0][0].visual, "vertex_colors"))):
-        try:
-            import numpy as np
-            from scipy.spatial import cKDTree
-            orig_geom = parts[0][0]
-            orig_verts = np.asarray(orig_geom.vertices, dtype=np.float64)
-            repaired_verts = np.asarray(mesh.vertices, dtype=np.float64)
-            kdtree = cKDTree(orig_verts)
-            _, idxs = kdtree.query(repaired_verts)
-
-            if _has_uvs(orig_geom, trimesh):
-                orig_uvs = np.asarray(orig_geom.visual.uv, dtype=np.float32)
-                new_uvs = orig_uvs[idxs]
-                mesh.visual = trimesh.visual.TextureVisuals(
-                    uv=new_uvs, material=orig_geom.visual.material
-                )
-                textures_preserved = True
-                context.log("Preserved original texture and UV mapping on repaired mesh.")
-            elif hasattr(orig_geom.visual, "vertex_colors") and orig_geom.visual.vertex_colors is not None:
-                orig_colors = np.asarray(orig_geom.visual.vertex_colors)
-                new_colors = orig_colors[idxs]
-                mesh.visual.vertex_colors = new_colors
-                textures_preserved = True
-                context.log("Preserved original vertex colors on repaired mesh.")
-        except Exception as exc:
-            context.log(f"Texture preservation skipped: {exc}")
-
     context.progress(90, "Exporting…")
     output_path = _output_path(context, "repair-mesh")
     mesh.export(str(output_path))
@@ -238,7 +208,6 @@ def auto_repair_mesh(
             "after": summary,
             "remaining_issues": remaining,
             "face_count": int(len(mesh.faces)),
-            "textures_dropped": has_textures and not textures_preserved,
-            "textures_preserved": textures_preserved,
+            "textures_dropped": has_textures,
         },
     )
