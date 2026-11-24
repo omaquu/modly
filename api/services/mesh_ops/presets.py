@@ -191,7 +191,10 @@ def recompute_normals(input_path: Path, output_path: Path) -> Path:
             continue
         # Make the winding consistent and outward first: normals derived from
         # inside-out faces would point inwards too.
-        trimesh.repair.fix_normals(geometry, multibody=True)
+        try:
+            trimesh.repair.fix_normals(geometry, multibody=True)
+        except Exception:
+            pass
         triangles = geometry.triangles
         face_normals = trimesh.util.unitize(
             np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
@@ -517,22 +520,49 @@ def restore_texture(
     params: Mapping[str, Any],
     context: MeshOpContext,
 ) -> MeshOpResult:
-    """Transfer or re-project textures from the original model onto an untextured or repaired mesh."""
+    """Transfer or re-project textures from the original model or image onto an untextured or repaired mesh."""
     output_path = _output_path(context, "restore-texture")
     context.log("Preset: restore texture")
-    context.progress(10, "Locating source textured mesh…")
+    context.progress(10, "Locating source texture or image…")
 
-    source_path_str = str(params.get("source_mesh", "")).strip()
+    source_mesh_str = str(params.get("source_mesh", "")).strip()
+    source_image_str = str(params.get("source_image", "")).strip()
+
     source_path: Optional[Path] = None
-    if source_path_str:
-        candidate = Path(source_path_str)
-        if candidate.is_file():
-            source_path = candidate
-        elif (context.workspace_dir / source_path_str).is_file():
-            source_path = context.workspace_dir / source_path_str
+    is_image = False
+    IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tga"}
 
-    # Auto-detect source mesh if not provided:
-    # 1. Strip suffix like _repair_mesh_... or _decimate_... to find original
+    # 1. Check explicit source_image parameter
+    if source_image_str:
+        cand = Path(source_image_str)
+        if cand.is_file():
+            source_path = cand
+            is_image = True
+        elif (context.workspace_dir / source_image_str).is_file():
+            source_path = context.workspace_dir / source_image_str
+            is_image = True
+        elif (context.workspace_dir / "Photos" / source_image_str).is_file():
+            source_path = context.workspace_dir / "Photos" / source_image_str
+            is_image = True
+        elif (context.workspace_dir / "Images" / source_image_str).is_file():
+            source_path = context.workspace_dir / "Images" / source_image_str
+            is_image = True
+
+    # 2. Check explicit source_mesh parameter (could also be an image path)
+    if not source_path and source_mesh_str:
+        cand = Path(source_mesh_str)
+        if cand.is_file():
+            source_path = cand
+        elif (context.workspace_dir / source_mesh_str).is_file():
+            source_path = context.workspace_dir / source_mesh_str
+        elif (context.workspace_dir / "Photos" / source_mesh_str).is_file():
+            source_path = context.workspace_dir / "Photos" / source_mesh_str
+        elif (context.workspace_dir / "Images" / source_mesh_str).is_file():
+            source_path = context.workspace_dir / "Images" / source_mesh_str
+        if source_path and source_path.suffix.lower() in IMAGE_EXTS:
+            is_image = True
+
+    # 3. Auto-detect source 3D model (.glb)
     if not source_path:
         stem = input_path.stem
         for tag in ("_repair_mesh_", "_decimate_", "_prepare_", "_smooth_"):
@@ -541,28 +571,158 @@ def restore_texture(
                 parent_dir = input_path.parent
                 candidates = sorted(list(parent_dir.glob(f"{base_stem}*.glb")), key=lambda p: p.stat().st_mtime, reverse=True)
                 for c in candidates:
-                    if c != input_path and "_repair_mesh_" not in c.name:
+                    if c != input_path and "_repair_mesh_" not in c.name and "_decimate_" not in c.name:
                         source_path = c
                         break
                 if source_path:
                     break
 
-    # 2. Check parent folder for matching base ID
     if not source_path and "_" in input_path.stem:
         parts = input_path.stem.split("_")
         prefix = f"{parts[0]}_{parts[1]}"
         for c in sorted(list(input_path.parent.glob(f"{prefix}*.glb")), key=lambda p: p.stat().st_mtime, reverse=True):
-            if c != input_path and "_repair_mesh_" not in c.name:
+            if c != input_path and "_repair_mesh_" not in c.name and "_decimate_" not in c.name:
                 source_path = c
                 break
 
-    if not source_path or not source_path.is_file():
-        raise MeshOpExecutionError("No source textured model found. Please specify the path in `source_mesh`.")
+    # 4. Auto-detect source image from run history (.modly-run-history.json)
+    if not source_path:
+        history_path = context.workspace_dir / ".modly-run-history.json"
+        if history_path.is_file():
+            try:
+                import json
+                with open(history_path, "r", encoding="utf-8") as f:
+                    history_data = json.load(f)
+                runs = history_data.get("runs", [])
+                runs_by_id = {r.get("id"): r for r in runs if r.get("id")}
+                target_runs = [
+                    r for r in runs
+                    if r.get("output_path") and (
+                        input_path.name in r.get("output_path") or
+                        r.get("output_path") in str(input_path).replace("\\", "/")
+                    )
+                ]
+                for r in reversed(target_runs):
+                    img_cand = r.get("inputs", {}).get("image")
+                    if not img_cand and r.get("parent_run_id"):
+                        pr = runs_by_id.get(r.get("parent_run_id"))
+                        if pr:
+                            img_cand = pr.get("inputs", {}).get("image")
+                    if img_cand:
+                        cand_p = Path(img_cand)
+                        if cand_p.is_file():
+                            source_path = cand_p
+                            is_image = True
+                            break
+                        elif (context.workspace_dir / img_cand).is_file():
+                            source_path = context.workspace_dir / img_cand
+                            is_image = True
+                            break
+                        elif (context.workspace_dir / "Photos" / img_cand).is_file():
+                            source_path = context.workspace_dir / "Photos" / img_cand
+                            is_image = True
+                            break
+            except Exception as hist_exc:
+                context.log(f"History lookup note: {hist_exc}")
 
+    # 5. Check Photos/ and Images/ directories for matching image or newest Image Studio image
+    if not source_path:
+        for folder_name in ("Photos", "Images"):
+            folder = context.workspace_dir / folder_name
+            if folder.is_dir():
+                for ext in ("*.png", "*.jpg", "*.jpeg", "*.webp"):
+                    matches = list(folder.glob(ext))
+                    if matches:
+                        matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+                        source_path = matches[0]
+                        is_image = True
+                        break
+            if source_path:
+                break
+
+    if not source_path or not source_path.is_file():
+        raise MeshOpExecutionError("No source textured model or image found. Please specify `source_mesh` (.glb) or `source_image` (.png/.jpg).")
+
+    trimesh = _trimesh()
+
+    # --- Case A: Texture from Image ---
+    if is_image:
+        context.log(f"Restoring texture from image: {source_path.name}")
+        context.progress(30, f"Loading image {source_path.name}…")
+        from PIL import Image
+        import numpy as np
+
+        try:
+            pil_img = Image.open(str(source_path)).convert("RGBA")
+        except Exception as img_err:
+            raise MeshOpExecutionError(f"Could not load image {source_path.name}: {img_err}")
+
+        context.progress(50, "Applying texture mapping to mesh…")
+        target_scene = trimesh.load(str(input_path), process=False)
+        target_parts = scene_meshes(target_scene, trimesh)
+        if not target_parts:
+            raise MeshOpExecutionError(f"Target mesh {input_path.name} contains no valid geometry.")
+        target_geom, _ = target_parts[0]
+
+        has_uv = (
+            hasattr(target_geom, "visual") and
+            hasattr(target_geom.visual, "uv") and
+            target_geom.visual.uv is not None and
+            len(target_geom.visual.uv) == len(target_geom.vertices)
+        )
+
+        if has_uv:
+            uvs = np.asarray(target_geom.visual.uv, dtype=np.float32)
+        else:
+            context.progress(65, "Generating front-projected UV coordinates…")
+            verts = np.asarray(target_geom.vertices, dtype=np.float32)
+            min_x, max_x = verts[:, 0].min(), verts[:, 0].max()
+            min_y, max_y = verts[:, 1].min(), verts[:, 1].max()
+            u = (verts[:, 0] - min_x) / max(max_x - min_x, 1e-6)
+            v = (verts[:, 1] - min_y) / max(max_y - min_y, 1e-6)
+            uvs = np.column_stack([u, v]).astype(np.float32)
+
+        mat = trimesh.visual.material.PBRMaterial(
+            baseColorTexture=pil_img,
+            metallicFactor=0.0,
+            roughnessFactor=0.8,
+            doubleSided=True,
+        )
+        visual = trimesh.visual.TextureVisuals(uv=uvs, material=mat)
+        restored = trimesh.Trimesh(
+            vertices=target_geom.vertices,
+            faces=target_geom.faces,
+            visual=visual,
+            process=False,
+        )
+
+        context.progress(85, "Saving textured mesh…")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        restored.export(str(output_path))
+
+        context.progress(95, "Measuring mesh…")
+        face_count, dimensions = _measure(output_path)
+        context.progress(100, "Done")
+
+        return MeshOpResult(
+            file_path=output_path,
+            details={
+                "steps": [
+                    {
+                        "op": "restore_texture",
+                        "summary": f"Applied texture from image {source_path.name} onto {input_path.name} ({face_count:,} faces).",
+                    }
+                ],
+                "source_image": str(source_path),
+                "face_count": face_count,
+                "dimensions": dimensions,
+            },
+        )
+
+    # --- Case B: Texture Transfer from 3D Model (.glb) ---
     context.log(f"Restoring textures from: {source_path.name}")
     context.progress(30, f"Loading geometry from {source_path.name}…")
 
-    pymeshlab, trimesh = _mesh_libraries("restore_texture")
     from scipy.spatial import cKDTree
     import numpy as np
 
@@ -608,6 +768,7 @@ def restore_texture(
     )
 
     context.progress(85, "Saving textured mesh…")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     restored.export(str(output_path))
 
     context.progress(95, "Measuring mesh…")

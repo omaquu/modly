@@ -237,10 +237,17 @@ REPAIR_MESH_PARAMS = (
 RESTORE_TEXTURE_PARAMS = (
     {
         "id": "source_mesh",
-        "label": "Source Mesh (Textured)",
+        "label": "Source Mesh (.glb)",
         "type": "string",
         "default": "",
-        "tooltip": "Path to original textured model (.glb). Leave blank to auto-detect pre-repair mesh in the same folder.",
+        "tooltip": "Optional path to original textured model (.glb). Auto-detected if empty.",
+    },
+    {
+        "id": "source_image",
+        "label": "Source Image (.png / .jpg)",
+        "type": "string",
+        "default": "",
+        "tooltip": "Optional path or name of source image from Image Studio or Photos. Auto-detected from run history if empty.",
     },
 )
 
@@ -625,6 +632,7 @@ BUILTIN_MESH_OPS = (
             ),
             params={
                 "source_mesh": "Optional path to the source textured model (.glb). Auto-detected if omitted.",
+                "source_image": "Optional path to the source image (.png/.jpg) or Image Studio image. Auto-detected if omitted.",
             },
             format_result=format_preset,
         ),

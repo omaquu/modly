@@ -240,6 +240,74 @@ class PrepareForGameAndWebTests(_PresetCase):
         self.assertIsNotNone(geometry.visual.uv)
 
 
+class RestoreTextureTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.workspace = Path(self.temp_dir.name)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_restore_texture_from_image(self):
+        from PIL import Image
+        mesh = trimesh.creation.box()
+        mesh_path = self.workspace / "cube.glb"
+        mesh.export(str(mesh_path))
+
+        img = Image.new("RGBA", (16, 16), (0, 255, 0, 255))
+        img_path = self.workspace / "texture.png"
+        img.save(str(img_path))
+
+        context = MeshOpContext(temp_dir=self.workspace, workspace_dir=self.workspace)
+        result = mesh_ops_registry.run(
+            "restore_texture",
+            mesh_path,
+            {"source_image": str(img_path)},
+            context,
+        )
+        self.assertTrue(result.file_path.is_file())
+        loaded = trimesh.load(str(result.file_path), force="mesh")
+        self.assertIsNotNone(loaded.visual)
+        self.assertIsNotNone(loaded.visual.uv)
+
+    def test_restore_texture_auto_detects_image_from_history(self):
+        import json
+        from PIL import Image
+
+        mesh = trimesh.creation.box()
+        mesh_path = self.workspace / "1795512859_303c9ab5.glb"
+        mesh.export(str(mesh_path))
+
+        img = Image.new("RGBA", (16, 16), (255, 0, 0, 255))
+        photos_dir = self.workspace / "Photos"
+        photos_dir.mkdir(parents=True, exist_ok=True)
+        img_path = photos_dir / "my_photo.png"
+        img.save(str(img_path))
+
+        history = {
+            "version": 1,
+            "runs": [
+                {
+                    "id": "run-1",
+                    "output_path": "Workflows/1795512859_303c9ab5.glb",
+                    "inputs": {"image": "Photos/my_photo.png"}
+                }
+            ]
+        }
+        with open(self.workspace / ".modly-run-history.json", "w") as f:
+            json.dump(history, f)
+
+        context = MeshOpContext(temp_dir=self.workspace, workspace_dir=self.workspace)
+        result = mesh_ops_registry.run(
+            "restore_texture",
+            mesh_path,
+            {},
+            context,
+        )
+        self.assertTrue(result.file_path.is_file())
+        self.assertIn("my_photo.png", result.details.get("source_image", ""))
+
+
 class PresetAgentToolTests(unittest.TestCase):
     def _run(self, name: str, arguments: dict, response: dict):
         requests = []
